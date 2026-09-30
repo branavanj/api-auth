@@ -1,0 +1,77 @@
+# Infra seule (pour lancer l'API en local) :   docker compose up -d
+# Tout, API comprise :                         docker compose --profile api up --build
+#
+# Les variables ${...} viennent du fichier .env (voir scripts/generate-env.sh).
+
+name: auth-api
+
+services:
+  postgres:
+    image: postgres:17-alpine
+    restart: unless-stopped
+    environment:
+      POSTGRES_DB: auth
+      POSTGRES_USER: auth_admin
+      POSTGRES_PASSWORD: ${POSTGRES_ADMIN_PASSWORD:?POSTGRES_ADMIN_PASSWORD manquant dans .env}
+      APP_DB_PASSWORD: ${APP_DB_PASSWORD:?APP_DB_PASSWORD manquant dans .env}
+      POSTGRES_INITDB_ARGS: "--auth-host=scram-sha-256"
+    volumes:
+      - pgdata:/var/lib/postgresql/data
+      - ./db/init:/docker-entrypoint-initdb.d:ro
+    ports:
+      - "127.0.0.1:5432:5432"
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U auth_admin -d auth"]
+      interval: 3s
+      timeout: 3s
+      retries: 20
+
+  redis:
+    image: redis:7-alpine
+    restart: unless-stopped
+    command: ["redis-server", "/usr/local/etc/redis/redis.conf", "--requirepass", "${REDIS_PASSWORD:?REDIS_PASSWORD manquant dans .env}"]
+    environment:
+      REDISCLI_AUTH: ${REDIS_PASSWORD}
+    volumes:
+      - redisdata:/data
+      - ./redis/redis.conf:/usr/local/etc/redis/redis.conf:ro
+    ports:
+      - "127.0.0.1:6379:6379"
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 3s
+      timeout: 3s
+      retries: 20
+
+  mailpit:
+    image: axllent/mailpit:latest
+    restart: unless-stopped
+    ports:
+      - "127.0.0.1:1025:1025"  # SMTP
+      - "127.0.0.1:8025:8025"  # interface web
+
+  api:
+    profiles: ["api"]
+    build: .
+    restart: unless-stopped
+    env_file: .env
+    environment:
+      # Dans le réseau Docker, les services se joignent par leur nom.
+      DATABASE_URL: postgresql+psycopg://auth_app:${APP_DB_PASSWORD}@postgres:5432/auth
+      REDIS_URL: redis://:${REDIS_PASSWORD}@redis:6379/0
+      SMTP_HOST: mailpit
+      SMTP_PORT: "1025"
+      DB_AUTO_CREATE: "false"
+    ports:
+      - "127.0.0.1:8000:8000"
+    depends_on:
+      postgres:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+      mailpit:
+        condition: service_started
+
+volumes:
+  pgdata:
+  redisdata:
